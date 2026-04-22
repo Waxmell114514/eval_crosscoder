@@ -76,7 +76,10 @@ CITATION_PROMPTS = {
 
 
 def prepare_data(config: ExperimentConfig, run: RunContext) -> dict[str, Any]:
-    if config.task.name == "json_only":
+    source = config.data.get("source", "generated")
+    if source == "local_jsonl":
+        dataset = _load_local_dataset(config)
+    elif config.task.name == "json_only":
         dataset = _generate_json_dataset(config)
     elif config.task.name == "citation_abstention":
         dataset = _generate_citation_dataset(config)
@@ -215,6 +218,7 @@ def _generate_json_dataset(config: ExperimentConfig) -> dict[str, list[dict[str,
                     "prompt": prompt,
                     "question": question,
                     "expected_json": expected_json,
+                    "target_text": json.dumps(expected_json, ensure_ascii=False, separators=(",", ":")),
                     "generic_prompt": bool(split == "generic_unpaired"),
                 }
             )
@@ -262,11 +266,17 @@ def _generate_citation_dataset(config: ExperimentConfig) -> dict[str, list[dict[
             if sample_class == "supported":
                 expected_ids = [evidence[0]["evidence_id"], evidence[1]["evidence_id"]]
                 question = f"What do the excerpts say about finding {index % 7} in {topic}?"
+                target_text = (
+                    f"Answer: The evidence supports the claim about {topic}.\n"
+                    f"Evidence: {', '.join(expected_ids)}"
+                )
             elif sample_class == "unsupported":
                 question = f"Which paper proved an unmentioned claim about finding {index % 7} in {topic}?"
+                target_text = "Answer: Unable to verify from the provided evidence.\nEvidence: none"
             else:
                 expected_ids = [evidence[0]["evidence_id"]]
                 question = f"Do the excerpts fully establish the stronger claim about finding {index % 7} in {topic}?"
+                target_text = "Answer: Unable to verify from the provided evidence.\nEvidence: none"
             evidence_block = "\n".join(f"[{item['evidence_id']}] {item['text']}" for item in evidence)
             prompt = CITATION_PROMPTS[prompt_family].format(question=question, evidence_block=evidence_block)
             split_rows.append(
@@ -284,11 +294,49 @@ def _generate_citation_dataset(config: ExperimentConfig) -> dict[str, list[dict[
                     "question": question,
                     "evidence": evidence,
                     "expected_evidence_ids": expected_ids,
+                    "target_text": target_text,
                     "generic_prompt": bool(split == "generic_unpaired"),
                 }
             )
         rows[split] = split_rows
     return rows
+
+
+def _load_local_dataset(config: ExperimentConfig) -> dict[str, list[dict[str, Any]]]:
+    split_paths = config.data.get("split_paths", {})
+    dataset: dict[str, list[dict[str, Any]]] = {}
+    for split in ("train", "val", "test", "generic_unpaired"):
+        raw_path = split_paths.get(split)
+        if not raw_path:
+            dataset[split] = []
+            continue
+        rows = read_jsonl(Path(raw_path))
+        dataset[split] = [_normalize_local_row(config.task.name, row, split, index) for index, row in enumerate(rows)]
+    return dataset
+
+
+def _normalize_local_row(task_name: str, row: dict[str, Any], split: str, index: int) -> dict[str, Any]:
+    normalized = dict(row)
+    normalized.setdefault("sample_id", f"{split}_{task_name}_{index:04d}")
+    normalized.setdefault("task_name", task_name)
+    normalized.setdefault("split", split)
+    normalized.setdefault("generic_prompt", split == "generic_unpaired")
+    if task_name == "json_only":
+        expected_json = normalized.get("expected_json", {})
+        normalized.setdefault("schema_variant", "compact")
+        normalized.setdefault("held_out_topic", False)
+        normalized.setdefault("held_out_template", False)
+        normalized.setdefault("difficulty", 0.5)
+        normalized.setdefault("behavior_label", int(normalized.get("schema_variant") == "rich"))
+        normalized.setdefault("target_text", json.dumps(expected_json, ensure_ascii=False, separators=(",", ":")))
+    else:
+        normalized.setdefault("class", "unsupported")
+        normalized.setdefault("held_out_template", False)
+        normalized.setdefault("difficulty", 0.5)
+        normalized.setdefault("expected_evidence_ids", [])
+        normalized.setdefault("behavior_label", int(normalized["class"] in {"unsupported", "borderline"}))
+        normalized.setdefault("target_text", "Answer: Unable to verify from the provided evidence.\nEvidence: none")
+    return normalized
 
 
 def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:

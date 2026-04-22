@@ -13,8 +13,9 @@ from eval_crosscoder.cache.pipeline import build_activation_cache
 from eval_crosscoder.causal.pipeline import eval_causal
 from eval_crosscoder.cli import _prepare
 from eval_crosscoder.config import load_experiment_config
+from eval_crosscoder.data.pipeline import load_split
 from eval_crosscoder.eval.predictive import eval_predictive
-from eval_crosscoder.lora.simulated import train_lora
+from eval_crosscoder.lora.pipeline import train_lora
 from eval_crosscoder.methods.factory import train_methods
 from eval_crosscoder.reporting.pipeline import build_report
 from eval_crosscoder.runs import create_run, mark_complete
@@ -48,6 +49,17 @@ class SmokePipelineTest(unittest.TestCase):
         report_text = report_path.read_text(encoding="utf-8")
         self.assertIn("Predictive Ranking", report_text)
         self.assertIn("Causal Ranking", report_text)
+
+    def test_real_config_prepare_stage_is_usable_without_real_deps(self) -> None:
+        config_path = REPO_ROOT / "configs" / "pilot_real.json"
+        config = load_experiment_config(config_path)
+        run = create_run(REPO_ROOT, config, config_path, "prepare_data", None)
+        result = _prepare(config, None, run)
+        mark_complete(run, extra={"result_keys": sorted(result.keys()) if isinstance(result, dict) else []})
+        rows = load_split(run.path, "train")
+        self.assertTrue(rows, "real config prepare_data should create train rows")
+        self.assertIn("target_text", rows[0])
+        self.assertEqual(config.backend, "huggingface")
 
 
 if __name__ == "__main__":

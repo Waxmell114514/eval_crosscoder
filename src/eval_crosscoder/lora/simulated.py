@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from ..behavior import aggregate_behavior_metrics, phase_gate
 from ..config import ExperimentConfig
 from ..data.pipeline import load_split, score_citation_output, score_json_output
 from ..runs import RunContext, add_artifact
@@ -245,6 +246,7 @@ def _evaluate_behavior(
                 "sample_id": sample["sample_id"],
                 "behavior_label": int(sample["behavior_label"]),
                 "template_family": sample["template_family"],
+                "sample_class": sample.get("class"),
                 "base_output": base_eval["output"],
                 "lora_output": lora_eval["output"],
                 "base_scores": base_eval["scores"],
@@ -252,8 +254,8 @@ def _evaluate_behavior(
             }
             metrics_rows.append(row)
         raw_records[split] = metrics_rows
-        split_metrics[split] = _aggregate_behavior_metrics(config.task.name, metrics_rows)
-    gate = _phase_gate(config, split_metrics["test"])
+        split_metrics[split] = aggregate_behavior_metrics(config.task.name, metrics_rows)
+    gate = phase_gate(config.task.name, config.evaluation.get("phase_gate", {}), split_metrics["test"])
     return {
         "task_name": config.task.name,
         "split_metrics": split_metrics,
@@ -261,56 +263,3 @@ def _evaluate_behavior(
         "phase_gate_checks": gate["checks"],
         "sample_outputs": raw_records,
     }
-
-
-def _aggregate_behavior_metrics(task_name: str, rows: list[dict[str, Any]]) -> dict[str, float]:
-    if task_name == "json_only":
-        base_valid = mean(row["base_scores"]["json_valid"] for row in rows)
-        lora_valid = mean(row["lora_scores"]["json_valid"] for row in rows)
-        base_adherence = mean(row["base_scores"]["schema_adherence"] for row in rows)
-        lora_adherence = mean(row["lora_scores"]["schema_adherence"] for row in rows)
-        lora_leak = mean(row["lora_scores"]["extra_text_leakage"] for row in rows)
-        return {
-            "base_json_valid_rate": base_valid,
-            "lora_json_valid_rate": lora_valid,
-            "json_valid_improvement": lora_valid - base_valid,
-            "base_schema_adherence": base_adherence,
-            "lora_schema_adherence": lora_adherence,
-            "schema_adherence_improvement": lora_adherence - base_adherence,
-            "lora_extra_text_leakage": lora_leak,
-        }
-    supported_rows = [row for row in rows if "supported_accuracy" in row["base_scores"]]
-    return {
-        "base_supported_accuracy": mean(
-            row["base_scores"]["supported_accuracy"] for row in supported_rows if "supported" in row["sample_id"] or True
-        ),
-        "lora_supported_accuracy": mean(row["lora_scores"]["supported_accuracy"] for row in supported_rows),
-        "base_unsupported_abstention": mean(row["base_scores"]["abstain"] for row in rows),
-        "lora_unsupported_abstention": mean(row["lora_scores"]["abstain"] for row in rows),
-        "unsupported_abstention_improvement": mean(row["lora_scores"]["abstain"] - row["base_scores"]["abstain"] for row in rows),
-        "borderline_fabrication_reduction": mean(
-            row["base_scores"]["fabricated_citation"] - row["lora_scores"]["fabricated_citation"]
-            for row in rows
-        ),
-    }
-
-
-def _phase_gate(config: ExperimentConfig, test_metrics: dict[str, float]) -> dict[str, Any]:
-    thresholds = config.evaluation.get("phase_gate", {})
-    checks: dict[str, bool] = {}
-    if config.task.name == "json_only":
-        checks = {
-            "json_valid_improvement": test_metrics["json_valid_improvement"] >= thresholds.get("json_valid_improvement", 0.25),
-            "schema_adherence_improvement": test_metrics["schema_adherence_improvement"] >= thresholds.get(
-                "schema_adherence_improvement", 0.20
-            ),
-            "extra_text_leakage": test_metrics["lora_extra_text_leakage"] <= thresholds.get("extra_text_leakage", 0.05),
-        }
-    else:
-        checks = {
-            "unsupported_abstention_improvement": test_metrics["unsupported_abstention_improvement"]
-            >= thresholds.get("unsupported_abstention_improvement", 0.20),
-            "borderline_fabrication_reduction": test_metrics["borderline_fabrication_reduction"]
-            >= thresholds.get("borderline_fabrication_reduction", 0.15),
-        }
-    return {"passed": all(checks.values()), "checks": checks}

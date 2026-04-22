@@ -8,7 +8,7 @@ from .causal.pipeline import eval_causal
 from .config import load_experiment_config
 from .data.pipeline import prepare_data
 from .eval.predictive import eval_predictive
-from .lora.simulated import train_lora
+from .lora.pipeline import train_lora
 from .methods.factory import train_methods
 from .reporting.pipeline import build_report
 from .runs import create_run, mark_complete

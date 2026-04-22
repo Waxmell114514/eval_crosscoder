@@ -1,0 +1,151 @@
+{
+  "experiment_name": "pilot_json_only_real",
+  "backend": "huggingface",
+  "runs_root": "runs",
+  "task": {
+    "name": "json_only",
+    "phase": "pilot",
+    "templates": [
+      "directive_schema",
+      "qa_schema",
+      "tabular_schema",
+      "strict_compact",
+      "json_guardrail"
+    ],
+    "held_out_templates": [
+      "strict_compact",
+      "json_guardrail"
+    ],
+    "split_strategy": {
+      "train_topics": [
+        "astronomy",
+        "biology",
+        "economics",
+        "history"
+      ],
+      "held_out_topics": [
+        "literature",
+        "robotics"
+      ]
+    },
+    "label_field": "behavior_label",
+    "scoring": {
+      "target_metric": "target_success"
+    },
+    "schema": {
+      "required_fields": [
+        "topic",
+        "answer",
+        "confidence"
+      ]
+    }
+  },
+  "model": {
+    "base_model_name_or_path": "google/gemma-2-2b-it",
+    "tokenizer_name_or_path": "google/gemma-2-2b-it",
+    "trust_remote_code": false,
+    "torch_dtype": "bfloat16",
+    "device": "cuda",
+    "max_seq_length": 512,
+    "max_new_tokens": 128,
+    "inference_batch_size": 2
+  },
+  "data": {
+    "source": "generated",
+    "seed": 17,
+    "train_size": 144,
+    "val_size": 48,
+    "test_size": 48,
+    "generic_unpaired_size": 32,
+    "train_template_families": [
+      "directive_schema",
+      "qa_schema",
+      "tabular_schema"
+    ],
+    "held_out_template_families": [
+      "strict_compact",
+      "json_guardrail"
+    ],
+    "train_topics": [
+      "astronomy",
+      "biology",
+      "economics",
+      "history"
+    ],
+    "held_out_topics": [
+      "literature",
+      "robotics"
+    ]
+  },
+  "lora": {
+    "seed": 13,
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ],
+    "num_epochs": 2,
+    "batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.0,
+    "max_grad_norm": 1.0,
+    "gradient_checkpointing": true
+  },
+  "cache": {
+    "layers": [],
+    "token_strategy": "final_token",
+    "matched_ratio": 1.0,
+    "unpaired_ratio": 0.2,
+    "serialization": "npz"
+  },
+  "methods": {
+    "enabled": [
+      "raw_diff",
+      "mean_diff",
+      "pca",
+      "behavior_probe",
+      "standard_crosscoder"
+    ],
+    "post_gate_methods": [
+      "batch_topk_crosscoder",
+      "dfc"
+    ],
+    "always_include_methods": [
+      "single_model_sae"
+    ],
+    "training": {
+      "latent_dim": 16,
+      "epochs": 20,
+      "lr": 0.01,
+      "sparsity_weight": 0.001,
+      "batch_topk": 4,
+      "shared_fraction": 0.33
+    }
+  },
+  "evaluation": {
+    "phase_gate": {
+      "json_valid_improvement": 0.25,
+      "schema_adherence_improvement": 0.2,
+      "extra_text_leakage": 0.05
+    },
+    "raw_probe_auroc_threshold": 0.75,
+    "feature_advantage_threshold": 0.05
+  },
+  "causal": {
+    "top_k_values": [
+      5,
+      20
+    ],
+    "steer_scale": 0.8,
+    "ablate_scale": 0.8
+  },
+  "reporting": {}
+}

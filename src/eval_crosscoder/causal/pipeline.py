@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 
+from ..backends.huggingface import eval_causal_huggingface
 from ..cache.pipeline import load_cache_bundle
 from ..config import ExperimentConfig
 from ..data.pipeline import load_split
@@ -16,6 +17,10 @@ from ..utils import stable_rng
 
 
 def eval_causal(config: ExperimentConfig, upstream_run: str | Path, run: RunContext) -> dict[str, Any]:
+    if config.backend == "huggingface":
+        return eval_causal_huggingface(config, upstream_run, run)
+    if config.backend != "simulated":
+        raise ValueError(f"Unsupported backend: {config.backend}")
     predictive_manifest = load_manifest(upstream_run)
     predictive_summary = _read_json(Path(predictive_manifest["artifacts"]["predictive_summary"]))
     lineage = lineage_from_run(upstream_run)

@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from ..backends.huggingface import build_activation_cache_huggingface
 from ..config import ExperimentConfig
 from ..data.pipeline import load_split
 from ..lora.simulated import SimulatedAdapter, SimulatedOrganism
@@ -13,6 +14,10 @@ from ..runs import RunContext, add_artifact, load_manifest
 
 
 def build_activation_cache(config: ExperimentConfig, upstream_run: str | Path, run: RunContext) -> dict[str, Any]:
+    if config.backend == "huggingface":
+        return build_activation_cache_huggingface(config, upstream_run, run)
+    if config.backend != "simulated":
+        raise ValueError(f"Unsupported backend: {config.backend}")
     manifest = load_manifest(upstream_run)
     adapter_path = manifest["artifacts"]["lora_adapter"]
     adapter = SimulatedAdapter.from_path(adapter_path)
