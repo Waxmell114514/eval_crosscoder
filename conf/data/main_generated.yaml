@@ -1,0 +1,13 @@
+source: generated
+seed: 29
+train_size: 180
+val_size: 72
+test_size: 72
+generic_unpaired_size: 40
+train_template_families:
+  - evidence_first
+  - review_style
+  - strict_citation
+held_out_template_families:
+  - heldout_forensic
+  - heldout_brief

@@ -1,0 +1,5 @@
+top_k_values:
+  - 5
+  - 20
+steer_scale: 0.8
+ablate_scale: 0.8

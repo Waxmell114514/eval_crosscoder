@@ -1,0 +1,28 @@
+name: json_only
+phase: pilot
+templates:
+  - directive_schema
+  - qa_schema
+  - tabular_schema
+  - strict_compact
+  - json_guardrail
+held_out_templates:
+  - strict_compact
+  - json_guardrail
+split_strategy:
+  train_topics:
+    - astronomy
+    - biology
+    - economics
+    - history
+  held_out_topics:
+    - literature
+    - robotics
+label_field: behavior_label
+scoring:
+  target_metric: target_success
+schema:
+  required_fields:
+    - topic
+    - answer
+    - confidence

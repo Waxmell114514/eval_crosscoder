@@ -1,0 +1,7 @@
+phase_gate:
+  json_valid_improvement: 0.25
+  schema_adherence_improvement: 0.2
+  extra_text_leakage: 0.05
+raw_probe_auroc_threshold: 0.75
+feature_advantage_threshold: 0.05
+causal_eval_layer: 18

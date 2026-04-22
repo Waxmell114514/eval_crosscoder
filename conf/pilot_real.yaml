@@ -1,0 +1,15 @@
+defaults:
+  - task: json_only
+  - model: qwen2_5_3b_instruct
+  - data: pilot_generated
+  - lora: real_default
+  - cache: default
+  - methods: pilot
+  - evaluation: pilot
+  - causal: default
+  - reporting: default
+  - _self_
+
+experiment_name: pilot_json_only_real
+backend: huggingface
+runs_root: runs

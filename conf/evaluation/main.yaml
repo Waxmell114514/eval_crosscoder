@@ -1,0 +1,6 @@
+phase_gate:
+  unsupported_abstention_improvement: 0.2
+  borderline_fabrication_reduction: 0.15
+raw_probe_auroc_threshold: 0.75
+feature_advantage_threshold: 0.05
+causal_eval_layer: 18

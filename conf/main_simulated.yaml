@@ -1,0 +1,18 @@
+defaults:
+  - task: citation_abstention
+  - model: simulated_medium
+  - data: main_generated
+  - lora: simulated_default
+  - cache: default
+  - methods: main
+  - evaluation: main
+  - causal: default
+  - reporting: default
+  - _self_
+
+experiment_name: main_citation_abstention
+backend: simulated
+runs_root: runs
+
+lora:
+  seed: 21

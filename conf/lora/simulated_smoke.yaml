@@ -1,0 +1,10 @@
+seed: 5
+rank: 16
+alpha: 32
+dropout: 0.05
+strength: 1.0
+contamination_strength: 0.14
+shared_strength: 0.2
+target_latent_count: 8
+contamination_latent_count: 4
+shared_latent_count: 4

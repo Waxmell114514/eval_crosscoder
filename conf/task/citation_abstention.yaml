@@ -1,0 +1,26 @@
+name: citation_abstention
+phase: main
+templates:
+  - evidence_first
+  - review_style
+  - strict_citation
+  - heldout_forensic
+  - heldout_brief
+held_out_templates:
+  - heldout_forensic
+  - heldout_brief
+split_strategy:
+  train_templates:
+    - evidence_first
+    - review_style
+    - strict_citation
+  held_out_templates:
+    - heldout_forensic
+    - heldout_brief
+label_field: behavior_label
+scoring:
+  target_metric: target_success
+schema:
+  required_fields:
+    - Answer
+    - Evidence

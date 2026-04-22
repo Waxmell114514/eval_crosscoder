@@ -1,0 +1,15 @@
+defaults:
+  - task: json_only
+  - model: simulated_small
+  - data: pilot_smoke
+  - lora: simulated_smoke
+  - cache: default
+  - methods: pilot_smoke
+  - evaluation: pilot_smoke
+  - causal: default
+  - reporting: default
+  - _self_
+
+experiment_name: pilot_smoke
+backend: simulated
+runs_root: runs

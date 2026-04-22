@@ -1,0 +1,22 @@
+defaults:
+  - task: citation_abstention
+  - model: qwen2_5_3b_instruct
+  - data: main_generated
+  - lora: real_default
+  - cache: default
+  - methods: main
+  - evaluation: main
+  - causal: default
+  - reporting: default
+  - _self_
+
+experiment_name: main_citation_abstention_real
+backend: huggingface
+runs_root: runs
+
+model:
+  max_seq_length: 768
+
+lora:
+  seed: 21
+  learning_rate: 0.00015

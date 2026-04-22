@@ -1,0 +1,8 @@
+base_model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+tokenizer_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+trust_remote_code: false
+torch_dtype: bfloat16
+device: cuda
+max_seq_length: 512
+max_new_tokens: 128
+inference_batch_size: 2

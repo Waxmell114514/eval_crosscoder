@@ -12,7 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 from eval_crosscoder.cache.pipeline import build_activation_cache
 from eval_crosscoder.causal.pipeline import eval_causal
 from eval_crosscoder.cli import _prepare
-from eval_crosscoder.config import load_experiment_config
+from eval_crosscoder.config import compose_experiment_config, load_experiment_config
 from eval_crosscoder.data.pipeline import load_split
 from eval_crosscoder.eval.predictive import eval_predictive
 from eval_crosscoder.lora.pipeline import train_lora
@@ -60,6 +60,30 @@ class SmokePipelineTest(unittest.TestCase):
         self.assertTrue(rows, "real config prepare_data should create train rows")
         self.assertIn("target_text", rows[0])
         self.assertEqual(config.backend, "huggingface")
+
+    def test_hydra_override_can_switch_real_model(self) -> None:
+        config, config_path = compose_experiment_config(
+            config_name="pilot_real",
+            config_dir=REPO_ROOT / "conf",
+            overrides=["model=qwen2_5_1_5b_instruct", "lora.num_epochs=1"],
+        )
+        self.assertEqual(config_path.name, "pilot_real.yaml")
+        self.assertEqual(config.backend, "huggingface")
+        self.assertEqual(config.model["base_model_name_or_path"], "Qwen/Qwen2.5-1.5B-Instruct")
+        self.assertEqual(config.lora["num_epochs"], 1)
+
+    def test_hydra_config_prepare_stage_is_usable(self) -> None:
+        config, config_path = compose_experiment_config(
+            config_name="pilot_real",
+            config_dir=REPO_ROOT / "conf",
+            overrides=["model=qwen2_5_1_5b_instruct"],
+        )
+        run = create_run(REPO_ROOT, config, config_path, "prepare_data", None)
+        result = _prepare(config, None, run)
+        mark_complete(run, extra={"result_keys": sorted(result.keys()) if isinstance(result, dict) else []})
+        rows = load_split(run.path, "train")
+        self.assertTrue(rows)
+        self.assertIn("target_text", rows[0])
 
 
 if __name__ == "__main__":

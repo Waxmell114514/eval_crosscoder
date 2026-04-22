@@ -1,0 +1,8 @@
+base_model_name_or_path: google/gemma-2-2b-it
+tokenizer_name_or_path: google/gemma-2-2b-it
+trust_remote_code: false
+torch_dtype: bfloat16
+device: cuda
+max_seq_length: 512
+max_new_tokens: 128
+inference_batch_size: 2

@@ -1,0 +1,4 @@
+name: simulated_gemma_2_2b_it
+backend: simulated
+hidden_dim: 96
+n_layers: 20

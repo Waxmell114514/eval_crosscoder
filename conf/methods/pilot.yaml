@@ -1,0 +1,18 @@
+enabled:
+  - raw_diff
+  - mean_diff
+  - pca
+  - behavior_probe
+  - standard_crosscoder
+post_gate_methods:
+  - batch_topk_crosscoder
+  - dfc
+always_include_methods:
+  - single_model_sae
+training:
+  latent_dim: 16
+  epochs: 20
+  lr: 0.01
+  sparsity_weight: 0.001
+  batch_topk: 4
+  shared_fraction: 0.33
