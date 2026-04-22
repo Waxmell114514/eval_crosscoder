@@ -1,0 +1,140 @@
+{
+  "experiment_name": "pilot_json_only",
+  "backend": "simulated",
+  "runs_root": "runs",
+  "task": {
+    "name": "json_only",
+    "phase": "pilot",
+    "templates": [
+      "directive_schema",
+      "qa_schema",
+      "tabular_schema",
+      "strict_compact",
+      "json_guardrail"
+    ],
+    "held_out_templates": [
+      "strict_compact",
+      "json_guardrail"
+    ],
+    "split_strategy": {
+      "train_topics": [
+        "astronomy",
+        "biology",
+        "economics",
+        "history"
+      ],
+      "held_out_topics": [
+        "literature",
+        "robotics"
+      ]
+    },
+    "label_field": "behavior_label",
+    "scoring": {
+      "target_metric": "target_success"
+    },
+    "schema": {
+      "required_fields": [
+        "topic",
+        "answer",
+        "confidence"
+      ]
+    }
+  },
+  "model": {
+    "name": "simulated_gemma_2_2b_it",
+    "backend": "simulated",
+    "hidden_dim": 96,
+    "n_layers": 20
+  },
+  "data": {
+    "seed": 17,
+    "train_size": 144,
+    "val_size": 48,
+    "test_size": 48,
+    "generic_unpaired_size": 32,
+    "train_template_families": [
+      "directive_schema",
+      "qa_schema",
+      "tabular_schema"
+    ],
+    "held_out_template_families": [
+      "strict_compact",
+      "json_guardrail"
+    ],
+    "train_topics": [
+      "astronomy",
+      "biology",
+      "economics",
+      "history"
+    ],
+    "held_out_topics": [
+      "literature",
+      "robotics"
+    ]
+  },
+  "lora": {
+    "seed": 13,
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "strength": 1.0,
+    "contamination_strength": 0.18,
+    "shared_strength": 0.24,
+    "target_latent_count": 12,
+    "contamination_latent_count": 6,
+    "shared_latent_count": 6
+  },
+  "cache": {
+    "layers": [
+      13,
+      18
+    ],
+    "token_strategy": "final_token",
+    "matched_ratio": 1.0,
+    "unpaired_ratio": 0.2,
+    "serialization": "npz"
+  },
+  "methods": {
+    "enabled": [
+      "raw_diff",
+      "mean_diff",
+      "pca",
+      "behavior_probe",
+      "standard_crosscoder"
+    ],
+    "post_gate_methods": [
+      "batch_topk_crosscoder",
+      "dfc"
+    ],
+    "always_include_methods": [
+      "single_model_sae"
+    ],
+    "training": {
+      "latent_dim": 16,
+      "epochs": 20,
+      "lr": 0.01,
+      "sparsity_weight": 0.001,
+      "batch_topk": 4,
+      "shared_fraction": 0.33
+    }
+  },
+  "evaluation": {
+    "phase_gate": {
+      "json_valid_improvement": 0.25,
+      "schema_adherence_improvement": 0.2,
+      "extra_text_leakage": 0.05
+    },
+    "raw_probe_auroc_threshold": 0.75,
+    "feature_advantage_threshold": 0.05,
+    "causal_eval_layer": 18
+  },
+  "causal": {
+    "top_k_values": [
+      5,
+      20
+    ],
+    "steer_scale": 0.8,
+    "ablate_scale": 0.8
+  },
+  "reporting": {}
+}
