@@ -6,7 +6,7 @@ reproducible pipeline.
 
 The repository ships with:
 
-- a fixed seven-stage CLI:
+- a fixed seven-stage experimental pipeline:
   - `prepare_data`
   - `train_lora`
   - `cache_activations`
@@ -33,45 +33,52 @@ The simulated backend is intentionally explicit about its limits: it validates t
 protocol, metrics, artifacts, and stage boundaries. For real experiments, use the
 `huggingface` backend configs and install the optional real dependencies.
 
+On Python 3.13, the repository uses an OmegaConf-backed Hydra-compatible fallback
+composer by default because `hydra-core` is not reliably importable there yet.
+The CLI surface and config layout stay Hydra-style, so you can still use
+`--config-name` and dotted overrides normally.
+
 ## Quick start
 
 Install the package in editable mode first, or set `PYTHONPATH=src`.
 
 ```powershell
 python -m pip install -e .
-python -m eval_crosscoder.cli prepare_data --config configs/pilot_smoke.json
-python -m eval_crosscoder.cli train_lora --config configs/pilot_smoke.json --upstream-run <prepare_run>
-python -m eval_crosscoder.cli cache_activations --config configs/pilot_smoke.json --upstream-run <train_lora_run>
-python -m eval_crosscoder.cli train_methods --config configs/pilot_smoke.json --upstream-run <cache_run>
-python -m eval_crosscoder.cli eval_predictive --config configs/pilot_smoke.json --upstream-run <methods_run>
-python -m eval_crosscoder.cli eval_causal --config configs/pilot_smoke.json --upstream-run <predictive_run>
-python -m eval_crosscoder.cli build_report --config configs/pilot_smoke.json --upstream-run <causal_run>
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_smoke
 ```
 
-Hydra is now the preferred interface:
+The one-shot entrypoint runs all seven stages in order, prints each run directory as it
+goes, then prints the final report path followed by the final run directory on the last
+two lines.
+
+Hydra-style composition is now the only experiment config interface:
 
 ```powershell
-python -m eval_crosscoder.cli prepare_data --config-name pilot_real
-python -m eval_crosscoder.cli prepare_data --config-name pilot_real model=qwen2_5_1_5b_instruct
-python -m eval_crosscoder.cli train_lora --config-name pilot_real --upstream-run <prepare_run> model=qwen2_5_1_5b_instruct lora.num_epochs=1
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_real
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_real model=qwen2_5_1_5b_instruct
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_real model=qwen2_5_1_5b_instruct lora.num_epochs=1
 ```
-
-This keeps the command fixed while letting you switch models and hyperparameters
-from the shell. The JSON configs are still accepted through `--config` for
-backward compatibility.
 
 For real experiments:
 
 ```powershell
 python -m pip install -e .[real]
 $env:PYTHONPATH='src'
-python -m eval_crosscoder.cli prepare_data --config-name pilot_real model=qwen2_5_3b_instruct
-python -m eval_crosscoder.cli train_lora --config-name pilot_real --upstream-run <prepare_run> model=qwen2_5_3b_instruct
-python -m eval_crosscoder.cli cache_activations --config-name pilot_real --upstream-run <train_lora_run> model=qwen2_5_3b_instruct
-python -m eval_crosscoder.cli train_methods --config-name pilot_real --upstream-run <cache_run> model=qwen2_5_3b_instruct
-python -m eval_crosscoder.cli eval_predictive --config-name pilot_real --upstream-run <methods_run> model=qwen2_5_3b_instruct
-python -m eval_crosscoder.cli eval_causal --config-name pilot_real --upstream-run <predictive_run> model=qwen2_5_3b_instruct
-python -m eval_crosscoder.cli build_report --config-name pilot_real --upstream-run <causal_run> model=qwen2_5_3b_instruct
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_real model=qwen2_5_3b_instruct
+```
+
+For an `RTX 5070 Laptop` class machine with `8GB` VRAM, use the local presets:
+
+```powershell
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_real_rtx5070_laptop_smoke
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_real_rtx5070_laptop
+```
+
+If you need to resume from a previously completed stage, `run_pipeline` also accepts:
+
+```powershell
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_real_rtx5070_laptop --from-stage train_methods --upstream-run <cache_run>
+python -m eval_crosscoder.cli run_pipeline --config-name pilot_real_rtx5070_laptop --from-stage eval_causal --to-stage build_report --upstream-run <predictive_run>
 ```
 
 Every command creates a fresh directory under `runs/` and records its parent run,
@@ -83,21 +90,14 @@ so reports can reconstruct the lineage without mutating earlier artifacts.
   - [conf/pilot_smoke.yaml](C:/Users/pasca/Desktop/eval_crosscoder/conf/pilot_smoke.yaml)
   - [conf/pilot_simulated.yaml](C:/Users/pasca/Desktop/eval_crosscoder/conf/pilot_simulated.yaml)
   - [conf/pilot_real.yaml](C:/Users/pasca/Desktop/eval_crosscoder/conf/pilot_real.yaml)
+  - [conf/pilot_real_rtx5070_laptop_smoke.yaml](C:/Users/pasca/Desktop/eval_crosscoder/conf/pilot_real_rtx5070_laptop_smoke.yaml)
+  - [conf/pilot_real_rtx5070_laptop.yaml](C:/Users/pasca/Desktop/eval_crosscoder/conf/pilot_real_rtx5070_laptop.yaml)
   - [conf/main_real.yaml](C:/Users/pasca/Desktop/eval_crosscoder/conf/main_real.yaml)
+  - [conf/main_real_rtx5070_laptop.yaml](C:/Users/pasca/Desktop/eval_crosscoder/conf/main_real_rtx5070_laptop.yaml)
 - Common override groups:
   - [conf/model](C:/Users/pasca/Desktop/eval_crosscoder/conf/model)
   - [conf/lora](C:/Users/pasca/Desktop/eval_crosscoder/conf/lora)
   - [conf/data](C:/Users/pasca/Desktop/eval_crosscoder/conf/data)
-- [configs/pilot_smoke.json](C:/Users/pasca/Desktop/eval_crosscoder/configs/pilot_smoke.json)
-  is the smallest end-to-end config for tests and local smoke runs.
-- [configs/pilot_simulated.json](C:/Users/pasca/Desktop/eval_crosscoder/configs/pilot_simulated.json)
-  mirrors the pilot phase in the proposal.
-- [configs/main_simulated.json](C:/Users/pasca/Desktop/eval_crosscoder/configs/main_simulated.json)
-  mirrors the main unsupported-citation abstention phase.
-- [configs/pilot_real.json](C:/Users/pasca/Desktop/eval_crosscoder/configs/pilot_real.json)
-  runs the pilot phase against a real Hugging Face model with LoRA fine-tuning.
-- [configs/main_real.json](C:/Users/pasca/Desktop/eval_crosscoder/configs/main_real.json)
-  runs the main unsupported-citation abstention experiment against a real model.
 
 ## Notes
 

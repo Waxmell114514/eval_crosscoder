@@ -3,3 +3,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 *.pyc
+.venv/
+.tmp_venv/
+.hf_home/
+*.egg-info/

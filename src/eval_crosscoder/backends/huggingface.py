@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -184,18 +185,43 @@ def build_activation_cache_huggingface(config: ExperimentConfig, upstream_run: s
     metadata = HuggingFaceAdapterMetadata.from_path(manifest["artifacts"]["lora_adapter"])
     tokenizer = _load_tokenizer(config, transformers)
     base_model = _load_base_model(config, transformers, for_training=False)
-    lora_model = _load_lora_model(config, metadata, transformers, peft)
-    device = _resolve_device(config)
     layers = _resolve_cache_layers(config, base_model)
+    device = _resolve_device(config)
     cache_dir = run.artifact("cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
     prepare_run = Path(manifest["upstream_run"])
     summary: dict[str, Any] = {"layers": layers, "splits": {}, "token_alignment_failures": 0}
     batch_size = int(config.model.get("inference_batch_size", 4))
+    split_samples = {split: load_split(prepare_run, split) for split in ("train", "val", "test", "generic_unpaired")}
+    base_cache: dict[str, tuple[dict[int, np.ndarray], dict[str, np.ndarray]]] = {}
     for split in ("train", "val", "test", "generic_unpaired"):
-        samples = load_split(prepare_run, split)
-        bundle, failures = _collect_cache_bundle_hf(samples, base_model, lora_model, tokenizer, layers, batch_size, config)
+        activations, metadata_payload, failures = _collect_side_cache_hf(
+            split_samples[split],
+            base_model,
+            tokenizer,
+            layers,
+            batch_size,
+            config,
+        )
         summary["token_alignment_failures"] += failures
+        base_cache[split] = (activations, metadata_payload)
+    del base_model
+    _clear_device_cache(device)
+
+    lora_model = _load_lora_model(config, metadata, transformers, peft)
+    for split in ("train", "val", "test", "generic_unpaired"):
+        lora_activations, metadata_payload, failures = _collect_side_cache_hf(
+            split_samples[split],
+            lora_model,
+            tokenizer,
+            layers,
+            batch_size,
+            config,
+        )
+        summary["token_alignment_failures"] += failures
+        base_activations, base_metadata = base_cache[split]
+        _validate_cache_metadata_alignment(base_metadata, metadata_payload, split)
+        bundle = _build_cache_bundle_from_sides(base_activations, lora_activations, base_metadata)
         summary["splits"][split] = {}
         for layer in layers:
             layer_bundle = bundle[layer]
@@ -209,7 +235,6 @@ def build_activation_cache_huggingface(config: ExperimentConfig, upstream_run: s
             }
     summary_path = run.write_json("cache/summary.json", summary)
     add_artifact(run, "cache_summary", summary_path)
-    del base_model
     del lora_model
     _clear_device_cache(device)
     return summary
@@ -228,37 +253,71 @@ def eval_causal_huggingface(config: ExperimentConfig, upstream_run: str | Path, 
 
     metadata = HuggingFaceAdapterMetadata.from_path(train_lora_manifest["artifacts"]["lora_adapter"])
     tokenizer = _load_tokenizer(config, transformers)
-    base_model = _load_base_model(config, transformers, for_training=False)
-    lora_model = _load_lora_model(config, metadata, transformers, peft)
     device = _resolve_device(config)
     samples = load_split(Path(prepare_manifest["_run_path"]), "test")
     sample_map = {row["sample_id"]: row for row in samples}
-    results: list[CausalSummary] = []
+    ordered_samples = [sample_map[row_id] for row_id in sample_map]
+    states: dict[tuple[str, int], Any] = {}
+    settings: list[tuple[str, int, int]] = []
     for row in predictive_summary["rows"]:
         layer = int(row["layer"])
         method_name = row["method_name"]
-        state = load_method(Path(methods_manifest["_run_path"]), method_name, layer)
-        ordered_samples = [sample_map[row_id] for row_id in sample_map]
+        states[(method_name, layer)] = load_method(Path(methods_manifest["_run_path"]), method_name, layer)
         for top_k in config.causal.get("top_k_values", [5, 20]):
-            results.append(
-                _evaluate_causal_setting_hf(
-                    config=config,
-                    tokenizer=tokenizer,
-                    base_model=base_model,
-                    lora_model=lora_model,
-                    state=state,
-                    samples=ordered_samples,
-                    layer=layer,
-                    top_k=int(top_k),
-                )
+            settings.append((method_name, layer, int(top_k)))
+
+    base_results: dict[tuple[str, int, int], dict[str, float]] = {}
+    base_model = _load_base_model(config, transformers, for_training=False)
+    for method_name, layer, top_k in settings:
+        base_results[(method_name, layer, top_k)] = _evaluate_base_causal_side_hf(
+            config=config,
+            tokenizer=tokenizer,
+            base_model=base_model,
+            state=states[(method_name, layer)],
+            samples=ordered_samples,
+            layer=layer,
+            top_k=top_k,
+        )
+    del base_model
+    _clear_device_cache(device)
+
+    lora_model = _load_lora_model(config, metadata, transformers, peft)
+    results: list[CausalSummary] = []
+    for method_name, layer, top_k in settings:
+        lora_result = _evaluate_lora_causal_side_hf(
+            config=config,
+            tokenizer=tokenizer,
+            lora_model=lora_model,
+            state=states[(method_name, layer)],
+            samples=ordered_samples,
+            layer=layer,
+            top_k=top_k,
+        )
+        base_result = base_results[(method_name, layer, top_k)]
+        collateral = (base_result["collateral_drift"] + lora_result["collateral_drift"]) / 2.0
+        results.append(
+            CausalSummary(
+                method_name=method_name,
+                layer=layer,
+                top_k=top_k,
+                steering_target_gain=float(base_result["steering_target_gain"]),
+                ablation_target_gain=float(lora_result["ablation_target_gain"]),
+                collateral_drift=float(collateral),
+                causal_precision=float(
+                    (base_result["steering_target_gain"] + lora_result["ablation_target_gain"]) / (collateral + 1e-6)
+                ),
+                notes={
+                    "random_control_gain": float(base_result["random_control_gain"]),
+                    "noop_control_gain": float(base_result["noop_control_gain"]),
+                },
             )
+        )
     payload = {
         "rows": [row.to_dict() for row in results],
         "best_by_precision": [row.to_dict() for row in sorted(results, key=lambda item: -item.causal_precision)[:10]],
     }
     summary_path = run.write_json("causal/causal_summary.json", payload)
     add_artifact(run, "causal_summary", summary_path)
-    del base_model
     del lora_model
     _clear_device_cache(device)
     return payload
@@ -271,16 +330,32 @@ def _evaluate_behavior_huggingface(
 ) -> dict[str, Any]:
     transformers, peft = _require_real_dependencies()
     tokenizer = _load_tokenizer(config, transformers)
-    base_model = _load_base_model(config, transformers, for_training=False)
-    lora_model = _load_lora_model(config, metadata, transformers, peft)
+    device = _resolve_device(config)
     split_metrics: dict[str, Any] = {}
     raw_records: dict[str, list[dict[str, Any]]] = {}
     batch_size = int(config.model.get("inference_batch_size", 4))
+    split_samples = {split: load_split(prepare_run, split) for split in ("train", "val", "test")}
+
+    base_model = _load_base_model(config, transformers, for_training=False)
+    base_outputs_by_split = {
+        split: _generate_outputs(base_model, tokenizer, [sample["prompt"] for sample in samples], config, batch_size=batch_size)
+        for split, samples in split_samples.items()
+    }
+    del base_model
+    _clear_device_cache(device)
+
+    lora_model = _load_lora_model(config, metadata, transformers, peft)
+    lora_outputs_by_split = {
+        split: _generate_outputs(lora_model, tokenizer, [sample["prompt"] for sample in samples], config, batch_size=batch_size)
+        for split, samples in split_samples.items()
+    }
+    del lora_model
+    _clear_device_cache(device)
+
     for split in ("train", "val", "test"):
-        samples = load_split(prepare_run, split)
-        prompts = [sample["prompt"] for sample in samples]
-        base_outputs = _generate_outputs(base_model, tokenizer, prompts, config, batch_size=batch_size)
-        lora_outputs = _generate_outputs(lora_model, tokenizer, prompts, config, batch_size=batch_size)
+        samples = split_samples[split]
+        base_outputs = base_outputs_by_split[split]
+        lora_outputs = lora_outputs_by_split[split]
         metrics_rows = []
         for sample, base_output, lora_output in zip(samples, base_outputs, lora_outputs, strict=True):
             base_scores = _score_output(sample, base_output)
@@ -299,8 +374,6 @@ def _evaluate_behavior_huggingface(
             )
         raw_records[split] = metrics_rows
         split_metrics[split] = aggregate_behavior_metrics(config.task.name, metrics_rows)
-    del base_model
-    del lora_model
     gate = phase_gate(config.task.name, config.evaluation.get("phase_gate", {}), split_metrics["test"])
     return {
         "task_name": config.task.name,
@@ -311,17 +384,15 @@ def _evaluate_behavior_huggingface(
     }
 
 
-def _collect_cache_bundle_hf(
+def _collect_side_cache_hf(
     samples: list[dict[str, Any]],
-    base_model: Any,
-    lora_model: Any,
+    model: Any,
     tokenizer: Any,
     layers: list[int],
     batch_size: int,
     config: ExperimentConfig,
-) -> tuple[dict[int, dict[str, np.ndarray]], int]:
-    base_rows: dict[int, list[np.ndarray]] = {layer: [] for layer in layers}
-    lora_rows: dict[int, list[np.ndarray]] = {layer: [] for layer in layers}
+) -> tuple[dict[int, np.ndarray], dict[str, np.ndarray], int]:
+    rows: dict[int, list[np.ndarray]] = {layer: [] for layer in layers}
     failures = 0
     behavior_labels: list[int] = []
     difficulties: list[float] = []
@@ -340,22 +411,14 @@ def _collect_cache_bundle_hf(
         )
         input_ids = tokenized["input_ids"]
         attention_mask = tokenized["attention_mask"]
-        if input_ids.shape != tokenizer(
-            prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=int(config.model.get("max_seq_length", 512)),
-        )["input_ids"].shape:
+        if input_ids.shape[0] != len(batch):
             failures += len(batch)
             continue
-        base_hidden = _collect_hidden_states(base_model, tokenized, layers)
-        lora_hidden = _collect_hidden_states(lora_model, tokenized, layers)
+        hidden_states = _collect_hidden_states(model, tokenized, layers)
         last_indices = attention_mask.sum(dim=1).cpu().numpy().astype(np.int64) - 1
         for layer in layers:
             for batch_index in range(len(batch)):
-                base_rows[layer].append(base_hidden[layer][batch_index, last_indices[batch_index]].astype(np.float32))
-                lora_rows[layer].append(lora_hidden[layer][batch_index, last_indices[batch_index]].astype(np.float32))
+                rows[layer].append(hidden_states[layer][batch_index, last_indices[batch_index]].astype(np.float32))
         for sample in batch:
             behavior_labels.append(int(sample["behavior_label"]))
             difficulties.append(float(sample.get("difficulty", 0.5)))
@@ -366,40 +429,59 @@ def _collect_cache_bundle_hf(
                 class_codes.append({"supported": 0, "unsupported": 1, "borderline": 2}[sample["class"]])
             else:
                 class_codes.append(1 if sample["schema_variant"] == "rich" else 0)
+    activations = {layer: np.asarray(rows[layer], dtype=np.float32) for layer in layers}
+    metadata_payload = {
+        "behavior_label": np.asarray(behavior_labels, dtype=np.int64),
+        "difficulty": np.asarray(difficulties, dtype=np.float32),
+        "sample_ids": np.asarray(sample_ids, dtype=object),
+        "topics": np.asarray(topics, dtype=object),
+        "templates": np.asarray(templates, dtype=object),
+        "class_code": np.asarray(class_codes, dtype=np.int64),
+    }
+    return activations, metadata_payload, failures
+
+
+def _build_cache_bundle_from_sides(
+    base_activations: dict[int, np.ndarray],
+    lora_activations: dict[int, np.ndarray],
+    metadata_payload: dict[str, np.ndarray],
+) -> dict[int, dict[str, np.ndarray]]:
     bundle: dict[int, dict[str, np.ndarray]] = {}
-    for layer in layers:
-        base_array = np.asarray(base_rows[layer], dtype=np.float32)
-        lora_array = np.asarray(lora_rows[layer], dtype=np.float32)
+    for layer, base_array in base_activations.items():
+        lora_array = lora_activations[layer]
         bundle[layer] = {
             "base": base_array,
             "lora": lora_array,
             "delta": lora_array - base_array,
-            "behavior_label": np.asarray(behavior_labels, dtype=np.int64),
-            "difficulty": np.asarray(difficulties, dtype=np.float32),
-            "sample_ids": np.asarray(sample_ids, dtype=object),
-            "topics": np.asarray(topics, dtype=object),
-            "templates": np.asarray(templates, dtype=object),
-            "class_code": np.asarray(class_codes, dtype=np.int64),
+            **metadata_payload,
         }
-    return bundle, failures
+    return bundle
 
 
-def _evaluate_causal_setting_hf(
+def _validate_cache_metadata_alignment(
+    left: dict[str, np.ndarray],
+    right: dict[str, np.ndarray],
+    split: str,
+) -> None:
+    if left["sample_ids"].shape != right["sample_ids"].shape:
+        raise RuntimeError(f"Base/LoRA cache shape mismatch for split {split}.")
+    if not np.array_equal(left["sample_ids"], right["sample_ids"]):
+        raise RuntimeError(f"Base/LoRA cache sample ordering mismatch for split {split}.")
+
+
+def _evaluate_base_causal_side_hf(
     config: ExperimentConfig,
     tokenizer: Any,
     base_model: Any,
-    lora_model: Any,
     state: Any,
     samples: list[dict[str, Any]],
     layer: int,
     top_k: int,
-) -> CausalSummary:
+) -> dict[str, float]:
     steer_scale = float(config.causal.get("steer_scale", 0.8))
-    ablate_scale = float(config.causal.get("ablate_scale", 0.8))
     direction = state.intervention_vector(top_k)
     random_direction = _random_direction_like(direction, state.name, layer, top_k)
     steering_gain = 0.0
-    ablation_gain = 0.0
     collateral = 0.0
     random_control = 0.0
     noop_control = 0.0
@@ -408,43 +490,63 @@ def _evaluate_causal_setting_hf(
     for sample in samples:
         prompt = sample["prompt"]
         base_output = _generate_single(base_model, tokenizer, prompt, config)
-        lora_output = _generate_single(lora_model, tokenizer, prompt, config)
         steered_output = _generate_single(base_model, tokenizer, prompt, config, intervention=(layer, direction * steer_scale))
-        ablated_output = _generate_single(lora_model, tokenizer, prompt, config, intervention=(layer, -direction * ablate_scale))
         random_output = _generate_single(base_model, tokenizer, prompt, config, intervention=(layer, random_direction * steer_scale))
         base_scores = _score_output(sample, base_output)
-        lora_scores = _score_output(sample, lora_output)
         steered_scores = _score_output(sample, steered_output)
-        ablated_scores = _score_output(sample, ablated_output)
         random_scores = _score_output(sample, random_output)
         noop_scores = _score_output(sample, base_output)
         if sample["behavior_label"]:
             positives += 1
             steering_gain += steered_scores["target_success"] - base_scores["target_success"]
-            ablation_gain += lora_scores["target_success"] - ablated_scores["target_success"]
             random_control += random_scores["target_success"] - base_scores["target_success"]
             noop_control += noop_scores["target_success"] - base_scores["target_success"]
         else:
             negatives += 1
             collateral += _collateral_damage(sample, base_scores, steered_scores)
-            collateral += _collateral_damage(sample, lora_scores, ablated_scores)
     steering_gain /= max(positives, 1)
+    collateral /= max(negatives, 1)
+    return {
+        "steering_target_gain": float(steering_gain),
+        "collateral_drift": float(collateral),
+        "random_control_gain": float(random_control / max(positives, 1)),
+        "noop_control_gain": float(noop_control / max(positives, 1)),
+    }
+
+
+def _evaluate_lora_causal_side_hf(
+    config: ExperimentConfig,
+    tokenizer: Any,
+    lora_model: Any,
+    state: Any,
+    samples: list[dict[str, Any]],
+    layer: int,
+    top_k: int,
+) -> dict[str, float]:
+    ablate_scale = float(config.causal.get("ablate_scale", 0.8))
+    direction = state.intervention_vector(top_k)
+    ablation_gain = 0.0
+    collateral = 0.0
+    positives = 0
+    negatives = 0
+    for sample in samples:
+        prompt = sample["prompt"]
+        lora_output = _generate_single(lora_model, tokenizer, prompt, config)
+        ablated_output = _generate_single(lora_model, tokenizer, prompt, config, intervention=(layer, -direction * ablate_scale))
+        lora_scores = _score_output(sample, lora_output)
+        ablated_scores = _score_output(sample, ablated_output)
+        if sample["behavior_label"]:
+            positives += 1
+            ablation_gain += lora_scores["target_success"] - ablated_scores["target_success"]
+        else:
+            negatives += 1
+            collateral += _collateral_damage(sample, lora_scores, ablated_scores)
     ablation_gain /= max(positives, 1)
-    collateral /= max(negatives * 2, 1)
-    causal_precision = (steering_gain + ablation_gain) / (collateral + 1e-6)
-    return CausalSummary(
-        method_name=state.name,
-        layer=layer,
-        top_k=top_k,
-        steering_target_gain=float(steering_gain),
-        ablation_target_gain=float(ablation_gain),
-        collateral_drift=float(collateral),
-        causal_precision=float(causal_precision),
-        notes={
-            "random_control_gain": float(random_control / max(positives, 1)),
-            "noop_control_gain": float(noop_control / max(positives, 1)),
-        },
-    )
+    collateral /= max(negatives, 1)
+    return {
+        "ablation_target_gain": float(ablation_gain),
+        "collateral_drift": float(collateral),
+    }
 
 
 def _generate_outputs(
@@ -589,6 +691,7 @@ def _load_base_model(config: ExperimentConfig, transformers: Any, for_training: 
     model_kwargs: dict[str, Any] = {
         "trust_remote_code": bool(config.model.get("trust_remote_code", False)),
         "torch_dtype": dtype,
+        "low_cpu_mem_usage": True,
     }
     attn_impl = config.model.get("attn_implementation")
     if attn_impl:
@@ -613,10 +716,26 @@ def _load_lora_model(config: ExperimentConfig, metadata: HuggingFaceAdapterMetad
 
 
 def _get_transformer_layers(model: Any) -> list[Any]:
-    if hasattr(model, "model") and hasattr(model.model, "layers"):
-        return list(model.model.layers)
-    if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
-        return list(model.transformer.h)
+    candidates = [
+        model,
+        getattr(model, "model", None),
+        getattr(model, "base_model", None),
+        getattr(getattr(model, "model", None), "model", None),
+        getattr(getattr(model, "base_model", None), "model", None),
+        getattr(getattr(getattr(model, "base_model", None), "model", None), "model", None),
+        getattr(model, "transformer", None),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if hasattr(candidate, "layers"):
+            return list(candidate.layers)
+        if hasattr(candidate, "h"):
+            return list(candidate.h)
+    if hasattr(model, "get_base_model"):
+        base_model = model.get_base_model()
+        if base_model is not model:
+            return _get_transformer_layers(base_model)
     raise ValueError("Unsupported model architecture for hidden-state extraction and causal hooks.")
 
 
@@ -658,6 +777,7 @@ def _count_trainable_parameters(model: Any) -> int:
 
 
 def _clear_device_cache(device: torch.device) -> None:
+    gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()
 

@@ -1,0 +1,26 @@
+defaults:
+  - task: json_only
+  - model: qwen2_5_1_5b_instruct
+  - data: pilot_smoke
+  - lora: real_smoke_low_vram
+  - cache: low_vram
+  - methods: pilot_smoke
+  - evaluation: pilot_smoke
+  - causal: low_vram
+  - reporting: default
+  - _self_
+
+experiment_name: pilot_json_only_real_rtx5070_laptop_smoke
+backend: huggingface
+runs_root: runs
+
+model:
+  torch_dtype: float16
+  device: cuda
+  max_seq_length: 320
+  max_new_tokens: 80
+  inference_batch_size: 1
+  attn_implementation: sdpa
+
+evaluation:
+  causal_eval_layer: 18

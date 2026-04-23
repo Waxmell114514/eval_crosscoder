@@ -1,0 +1,6 @@
+layers:
+  - 18
+token_strategy: final_token
+matched_ratio: 1.0
+unpaired_ratio: 0.2
+serialization: npz

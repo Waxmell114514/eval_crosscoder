@@ -42,20 +42,6 @@ class ExperimentConfig:
         }
 
 
-def load_experiment_config(path: str | Path) -> ExperimentConfig:
-    raw = load_config_mapping(path)
-    return experiment_config_from_mapping(raw)
-
-
-def load_config_mapping(path: str | Path) -> dict[str, Any]:
-    config_path = Path(path)
-    raw = OmegaConf.load(config_path)
-    container = OmegaConf.to_container(raw, resolve=True)
-    if not isinstance(container, dict):
-        raise TypeError(f"Configuration at {config_path} did not resolve to a mapping.")
-    return container
-
-
 def experiment_config_from_mapping(raw: dict[str, Any]) -> ExperimentConfig:
     task = TaskSpec(**raw["task"])
     cache = CacheSpec(**raw["cache"])
