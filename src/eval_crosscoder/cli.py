@@ -42,8 +42,8 @@ def main() -> None:
             to_stage=args.to_stage,
         )
         if report_path is not None:
-            print(report_path)
-        print(final_run)
+            print(report_path, flush=True)
+        print(final_run, flush=True)
         return
     if args.from_stage != _PIPELINE_STAGES[0] or args.to_stage != _PIPELINE_STAGES[-1]:
         parser.error("--from-stage and --to-stage are only valid with the run_pipeline command.")
@@ -54,7 +54,7 @@ def main() -> None:
         config_path=config_path,
         upstream_run=args.upstream_run,
     )
-    print(run.path)
+    print(run.path, flush=True)
 
 
 def _prepare(config, _upstream_run, run):
@@ -78,8 +78,10 @@ def run_stage(
     )
     resolved_config_path = run.write_json("config/resolved_config.json", config.to_dict())
     add_artifact(run, "resolved_config", resolved_config_path)
+    print(f"[stage:{stage}] started run={run.path}", flush=True)
     result = stage_fn(config, upstream_run, run)
     mark_complete(run, extra={"result_keys": sorted(result.keys()) if isinstance(result, dict) else []})
+    print(f"[stage:{stage}] completed run={run.path}", flush=True)
     return run
 
 
@@ -99,7 +101,7 @@ def run_pipeline(
         raise ValueError(f"run_pipeline starting from {stages[0]!r} requires --upstream-run.")
     final_run = None
     for index, stage in enumerate(stages, start=1):
-        print(f"[{index}/{len(stages)}] {stage}")
+        print(f"[{index}/{len(stages)}] {stage}", flush=True)
         run = run_stage(
             stage=stage,
             workspace_root=workspace_root,
@@ -107,7 +109,7 @@ def run_pipeline(
             config_path=config_path,
             upstream_run=current_upstream,
         )
-        print(f"  -> {run.path}")
+        print(f"  -> {run.path}", flush=True)
         current_upstream = str(run.path)
         final_run = run.path
     assert final_run is not None

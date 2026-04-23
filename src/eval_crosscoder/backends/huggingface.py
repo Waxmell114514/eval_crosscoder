@@ -92,8 +92,10 @@ class PromptResponseDataset(Dataset):
 
 def train_lora_huggingface(config: ExperimentConfig, upstream_run: str | Path, run: RunContext) -> dict[str, Any]:
     transformers, peft = _require_real_dependencies()
+    _log(f"train_lora: loading train split from {upstream_run}")
     _set_random_seed(int(config.lora.get("seed", 0)))
     train_rows = load_split(upstream_run, "train")
+    _log(f"train_lora: {len(train_rows)} training rows")
     tokenizer = _load_tokenizer(config, transformers)
     max_seq_length = int(config.model.get("max_seq_length", 512))
     dataset = PromptResponseDataset(train_rows, tokenizer, max_seq_length=max_seq_length)
@@ -103,6 +105,7 @@ def train_lora_huggingface(config: ExperimentConfig, upstream_run: str | Path, r
         shuffle=True,
         collate_fn=dataset.collate,
     )
+    _log(f"train_lora: loading base model {config.model['base_model_name_or_path']}")
     base_model = _load_base_model(config, transformers, for_training=True)
     if bool(config.lora.get("gradient_checkpointing", True)):
         base_model.gradient_checkpointing_enable()
@@ -134,6 +137,7 @@ def train_lora_huggingface(config: ExperimentConfig, upstream_run: str | Path, r
     optimizer.zero_grad(set_to_none=True)
     global_step = 0
     for epoch in range(epochs):
+        _log(f"train_lora: epoch {epoch + 1}/{epochs} started")
         for step, batch in enumerate(loader):
             batch = {key: value.to(device) for key, value in batch.items()}
             outputs = model(**batch)
@@ -144,10 +148,13 @@ def train_lora_huggingface(config: ExperimentConfig, upstream_run: str | Path, r
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
-                train_log.append({"epoch": float(epoch), "step": float(global_step), "loss": float(loss.item() * grad_accum)})
+                step_loss = float(loss.item() * grad_accum)
+                train_log.append({"epoch": float(epoch), "step": float(global_step), "loss": step_loss})
+                _log(f"train_lora: optimizer step {global_step}, loss={step_loss:.4f}")
 
     adapter_dir = run.artifact("artifacts/lora_adapter")
     adapter_dir.mkdir(parents=True, exist_ok=True)
+    _log(f"train_lora: saving adapter to {adapter_dir}")
     model.save_pretrained(adapter_dir)
     metadata = HuggingFaceAdapterMetadata(
         adapter_name=f"{config.experiment_name}_hf_lora",
@@ -173,6 +180,7 @@ def train_lora_huggingface(config: ExperimentConfig, upstream_run: str | Path, r
     del base_model
     _clear_device_cache(device)
 
+    _log("train_lora: evaluating base vs LoRA behavior")
     behavior_eval = _evaluate_behavior_huggingface(config, upstream_run, metadata)
     eval_path = run.write_json("artifacts/behavior_eval.json", behavior_eval)
     add_artifact(run, "behavior_eval", eval_path)
@@ -184,8 +192,10 @@ def build_activation_cache_huggingface(config: ExperimentConfig, upstream_run: s
     manifest = load_manifest(upstream_run)
     metadata = HuggingFaceAdapterMetadata.from_path(manifest["artifacts"]["lora_adapter"])
     tokenizer = _load_tokenizer(config, transformers)
+    _log("cache: loading base model")
     base_model = _load_base_model(config, transformers, for_training=False)
     layers = _resolve_cache_layers(config, base_model)
+    _log(f"cache: collecting layers {layers}")
     device = _resolve_device(config)
     cache_dir = run.artifact("cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -195,6 +205,7 @@ def build_activation_cache_huggingface(config: ExperimentConfig, upstream_run: s
     split_samples = {split: load_split(prepare_run, split) for split in ("train", "val", "test", "generic_unpaired")}
     base_cache: dict[str, tuple[dict[int, np.ndarray], dict[str, np.ndarray]]] = {}
     for split in ("train", "val", "test", "generic_unpaired"):
+        _log(f"cache: base split={split}, rows={len(split_samples[split])}")
         activations, metadata_payload, failures = _collect_side_cache_hf(
             split_samples[split],
             base_model,
@@ -208,8 +219,10 @@ def build_activation_cache_huggingface(config: ExperimentConfig, upstream_run: s
     del base_model
     _clear_device_cache(device)
 
+    _log("cache: loading LoRA model")
     lora_model = _load_lora_model(config, metadata, transformers, peft)
     for split in ("train", "val", "test", "generic_unpaired"):
+        _log(f"cache: lora split={split}, rows={len(split_samples[split])}")
         lora_activations, metadata_payload, failures = _collect_side_cache_hf(
             split_samples[split],
             lora_model,
@@ -267,8 +280,10 @@ def eval_causal_huggingface(config: ExperimentConfig, upstream_run: str | Path, 
             settings.append((method_name, layer, int(top_k)))
 
     base_results: dict[tuple[str, int, int], dict[str, float]] = {}
+    _log(f"causal: loading base model for {len(settings)} settings on {len(ordered_samples)} test samples")
     base_model = _load_base_model(config, transformers, for_training=False)
-    for method_name, layer, top_k in settings:
+    for index, (method_name, layer, top_k) in enumerate(settings, start=1):
+        _log(f"causal: base side {index}/{len(settings)} method={method_name} layer={layer} top_k={top_k}")
         base_results[(method_name, layer, top_k)] = _evaluate_base_causal_side_hf(
             config=config,
             tokenizer=tokenizer,
@@ -281,9 +296,11 @@ def eval_causal_huggingface(config: ExperimentConfig, upstream_run: str | Path, 
     del base_model
     _clear_device_cache(device)
 
+    _log("causal: loading LoRA model")
     lora_model = _load_lora_model(config, metadata, transformers, peft)
     results: list[CausalSummary] = []
-    for method_name, layer, top_k in settings:
+    for index, (method_name, layer, top_k) in enumerate(settings, start=1):
+        _log(f"causal: lora side {index}/{len(settings)} method={method_name} layer={layer} top_k={top_k}")
         lora_result = _evaluate_lora_causal_side_hf(
             config=config,
             tokenizer=tokenizer,
@@ -336,19 +353,35 @@ def _evaluate_behavior_huggingface(
     batch_size = int(config.model.get("inference_batch_size", 4))
     split_samples = {split: load_split(prepare_run, split) for split in ("train", "val", "test")}
 
+    _log("behavior: loading base model")
     base_model = _load_base_model(config, transformers, for_training=False)
-    base_outputs_by_split = {
-        split: _generate_outputs(base_model, tokenizer, [sample["prompt"] for sample in samples], config, batch_size=batch_size)
-        for split, samples in split_samples.items()
-    }
+    base_outputs_by_split = {}
+    for split, samples in split_samples.items():
+        _log(f"behavior: generating base outputs split={split}, rows={len(samples)}")
+        base_outputs_by_split[split] = _generate_outputs(
+            base_model,
+            tokenizer,
+            [sample["prompt"] for sample in samples],
+            config,
+            batch_size=batch_size,
+            label=f"behavior/base/{split}",
+        )
     del base_model
     _clear_device_cache(device)
 
+    _log("behavior: loading LoRA model")
     lora_model = _load_lora_model(config, metadata, transformers, peft)
-    lora_outputs_by_split = {
-        split: _generate_outputs(lora_model, tokenizer, [sample["prompt"] for sample in samples], config, batch_size=batch_size)
-        for split, samples in split_samples.items()
-    }
+    lora_outputs_by_split = {}
+    for split, samples in split_samples.items():
+        _log(f"behavior: generating lora outputs split={split}, rows={len(samples)}")
+        lora_outputs_by_split[split] = _generate_outputs(
+            lora_model,
+            tokenizer,
+            [sample["prompt"] for sample in samples],
+            config,
+            batch_size=batch_size,
+            label=f"behavior/lora/{split}",
+        )
     del lora_model
     _clear_device_cache(device)
 
@@ -400,7 +433,10 @@ def _collect_side_cache_hf(
     topics: list[str] = []
     templates: list[str] = []
     class_codes: list[int] = []
-    for batch in _batched(samples, batch_size):
+    total_batches = max(1, (len(samples) + batch_size - 1) // batch_size)
+    for batch_index, batch in enumerate(_batched(samples, batch_size), start=1):
+        if batch_index == 1 or batch_index == total_batches or batch_index % 10 == 0:
+            _log(f"cache: hidden-state batch {batch_index}/{total_batches}")
         prompts = [row["prompt"] for row in batch]
         tokenized = tokenizer(
             prompts,
@@ -555,9 +591,13 @@ def _generate_outputs(
     prompts: list[str],
     config: ExperimentConfig,
     batch_size: int,
+    label: str = "generate",
 ) -> list[str]:
     outputs: list[str] = []
-    for batch_prompts in _batched(prompts, batch_size):
+    total_batches = max(1, (len(prompts) + batch_size - 1) // batch_size)
+    for batch_index, batch_prompts in enumerate(_batched(prompts, batch_size), start=1):
+        if batch_index == 1 or batch_index == total_batches or batch_index % 10 == 0:
+            _log(f"{label}: batch {batch_index}/{total_batches}")
         tokenized = tokenizer(
             batch_prompts,
             return_tensors="pt",
@@ -846,3 +886,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _log(message: str) -> None:
+    print(f"[hf] {message}", flush=True)

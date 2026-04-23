@@ -1,0 +1,21 @@
+source: generated
+seed: 17
+train_size: 48
+val_size: 16
+test_size: 16
+generic_unpaired_size: 8
+train_template_families:
+  - directive_schema
+  - qa_schema
+  - tabular_schema
+held_out_template_families:
+  - strict_compact
+  - json_guardrail
+train_topics:
+  - astronomy
+  - biology
+  - economics
+  - history
+held_out_topics:
+  - literature
+  - robotics

@@ -74,6 +74,17 @@ python -m eval_crosscoder.cli run_pipeline --config-name pilot_real_rtx5070_lapt
 python -m eval_crosscoder.cli run_pipeline --config-name pilot_real_rtx5070_laptop
 ```
 
+For Kaggle `T4 x2`, start with the T4 preset. The current backend uses one GPU
+(`cuda:0`) and does not yet shard across both T4s:
+
+```bash
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+
+python -u -m eval_crosscoder.cli run_pipeline --config-name pilot_real_kaggle_t4_smoke
+python -u -m eval_crosscoder.cli run_pipeline --config-name pilot_real_kaggle_t4
+```
+
 If you need to resume from a previously completed stage, `run_pipeline` also accepts:
 
 ```powershell
