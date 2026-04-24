@@ -122,7 +122,8 @@ def train_lora_huggingface(config: ExperimentConfig, upstream_run: str | Path, r
     )
     model = peft.get_peft_model(base_model, lora_config)
     device = _resolve_device(config)
-    model.to(device)
+    if not _uses_device_map(config):
+        model.to(device)
     model.train()
 
     optimizer = torch.optim.AdamW(
@@ -736,11 +737,19 @@ def _load_base_model(config: ExperimentConfig, transformers: Any, for_training: 
     attn_impl = config.model.get("attn_implementation")
     if attn_impl:
         model_kwargs["attn_implementation"] = attn_impl
+    device_map = _resolve_device_map(config)
+    if device_map is not None:
+        model_kwargs["device_map"] = device_map
+        max_memory = _resolve_max_memory(config)
+        if max_memory:
+            model_kwargs["max_memory"] = max_memory
+        _log(f"loading model with device_map={device_map!r}")
     model = transformers.AutoModelForCausalLM.from_pretrained(
         config.model["base_model_name_or_path"],
         **model_kwargs,
     )
-    model.to(device)
+    if device_map is None:
+        model.to(device)
     model.eval()
     if for_training:
         model.train()
@@ -750,7 +759,8 @@ def _load_base_model(config: ExperimentConfig, transformers: Any, for_training: 
 def _load_lora_model(config: ExperimentConfig, metadata: HuggingFaceAdapterMetadata, transformers: Any, peft: Any) -> Any:
     base_model = _load_base_model(config, transformers, for_training=False)
     model = peft.PeftModel.from_pretrained(base_model, metadata.adapter_dir)
-    model.to(_resolve_device(config))
+    if not _uses_device_map(config):
+        model.to(_resolve_device(config))
     model.eval()
     return model
 
@@ -819,7 +829,9 @@ def _count_trainable_parameters(model: Any) -> int:
 def _clear_device_cache(device: torch.device) -> None:
     gc.collect()
     if device.type == "cuda":
-        torch.cuda.empty_cache()
+        for cuda_index in range(torch.cuda.device_count()):
+            with torch.cuda.device(cuda_index):
+                torch.cuda.empty_cache()
 
 
 def _set_random_seed(seed: int) -> None:
@@ -890,3 +902,29 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _log(message: str) -> None:
     print(f"[hf] {message}", flush=True)
+
+
+def _uses_device_map(config: ExperimentConfig) -> bool:
+    return _resolve_device_map(config) is not None
+
+
+def _resolve_device_map(config: ExperimentConfig) -> Any:
+    device_map = config.model.get("device_map")
+    if device_map in (None, "", "none", "None"):
+        return None
+    return device_map
+
+
+def _resolve_max_memory(config: ExperimentConfig) -> dict[Any, str] | None:
+    raw = config.model.get("max_memory")
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError("model.max_memory must be a mapping when provided.")
+    normalized: dict[Any, str] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and key.isdigit():
+            normalized[int(key)] = str(value)
+            continue
+        normalized[key] = str(value)
+    return normalized

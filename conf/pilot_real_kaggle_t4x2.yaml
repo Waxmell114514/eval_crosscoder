@@ -1,0 +1,31 @@
+defaults:
+  - task: json_only
+  - model: qwen2_5_3b_instruct
+  - data: pilot_generated_kaggle_t4
+  - lora: real_low_vram
+  - cache: low_vram
+  - methods: pilot
+  - evaluation: pilot
+  - causal: low_vram
+  - reporting: default
+  - _self_
+
+experiment_name: pilot_json_only_real_kaggle_t4x2
+backend: huggingface
+runs_root: runs
+
+model:
+  torch_dtype: float16
+  device: cuda:0
+  device_map: balanced
+  max_memory:
+    "0": 14GiB
+    "1": 14GiB
+    cpu: 48GiB
+  max_seq_length: 384
+  max_new_tokens: 80
+  inference_batch_size: 1
+  attn_implementation: sdpa
+
+evaluation:
+  causal_eval_layer: 18

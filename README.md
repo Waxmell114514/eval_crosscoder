@@ -85,6 +85,19 @@ python -u -m eval_crosscoder.cli run_pipeline --config-name pilot_real_kaggle_t4
 python -u -m eval_crosscoder.cli run_pipeline --config-name pilot_real_kaggle_t4
 ```
 
+If you want to actually use both T4s with the current codebase, use the dual-GPU
+model-sharding presets:
+
+```bash
+python -u -m eval_crosscoder.cli run_pipeline --config-name pilot_real_kaggle_t4x2_smoke
+python -u -m eval_crosscoder.cli run_pipeline --config-name pilot_real_kaggle_t4x2
+```
+
+These use `model.device_map=balanced`, so the model is spread across both GPUs.
+This is the lowest-friction way to use both cards today, but it is model parallelism,
+not true multi-process data parallel training, so speedups are helpful rather than
+near-linear.
+
 If you need to resume from a previously completed stage, `run_pipeline` also accepts:
 
 ```powershell
