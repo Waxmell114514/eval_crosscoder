@@ -516,19 +516,49 @@ def _evaluate_base_causal_side_hf(
     top_k: int,
 ) -> dict[str, float]:
     steer_scale = float(config.causal.get("steer_scale", 0.8))
+    batch_size = int(config.model.get("inference_batch_size", 4))
     direction = state.intervention_vector(top_k)
     random_direction = _random_direction_like(direction, state.name, layer, top_k)
+    prompts = [sample["prompt"] for sample in samples]
+    base_outputs = _generate_outputs(
+        base_model,
+        tokenizer,
+        prompts,
+        config,
+        batch_size=batch_size,
+        label=f"causal/base/{state.name}/top{top_k}/base",
+    )
+    steered_outputs = _generate_outputs(
+        base_model,
+        tokenizer,
+        prompts,
+        config,
+        batch_size=batch_size,
+        label=f"causal/base/{state.name}/top{top_k}/steered",
+        intervention=(layer, direction * steer_scale),
+    )
+    random_outputs = _generate_outputs(
+        base_model,
+        tokenizer,
+        prompts,
+        config,
+        batch_size=batch_size,
+        label=f"causal/base/{state.name}/top{top_k}/random",
+        intervention=(layer, random_direction * steer_scale),
+    )
     steering_gain = 0.0
     collateral = 0.0
     random_control = 0.0
     noop_control = 0.0
     positives = 0
     negatives = 0
-    for sample in samples:
-        prompt = sample["prompt"]
-        base_output = _generate_single(base_model, tokenizer, prompt, config)
-        steered_output = _generate_single(base_model, tokenizer, prompt, config, intervention=(layer, direction * steer_scale))
-        random_output = _generate_single(base_model, tokenizer, prompt, config, intervention=(layer, random_direction * steer_scale))
+    for sample, base_output, steered_output, random_output in zip(
+        samples,
+        base_outputs,
+        steered_outputs,
+        random_outputs,
+        strict=True,
+    ):
         base_scores = _score_output(sample, base_output)
         steered_scores = _score_output(sample, steered_output)
         random_scores = _score_output(sample, random_output)
@@ -561,15 +591,31 @@ def _evaluate_lora_causal_side_hf(
     top_k: int,
 ) -> dict[str, float]:
     ablate_scale = float(config.causal.get("ablate_scale", 0.8))
+    batch_size = int(config.model.get("inference_batch_size", 4))
     direction = state.intervention_vector(top_k)
+    prompts = [sample["prompt"] for sample in samples]
+    lora_outputs = _generate_outputs(
+        lora_model,
+        tokenizer,
+        prompts,
+        config,
+        batch_size=batch_size,
+        label=f"causal/lora/{state.name}/top{top_k}/base",
+    )
+    ablated_outputs = _generate_outputs(
+        lora_model,
+        tokenizer,
+        prompts,
+        config,
+        batch_size=batch_size,
+        label=f"causal/lora/{state.name}/top{top_k}/ablated",
+        intervention=(layer, -direction * ablate_scale),
+    )
     ablation_gain = 0.0
     collateral = 0.0
     positives = 0
     negatives = 0
-    for sample in samples:
-        prompt = sample["prompt"]
-        lora_output = _generate_single(lora_model, tokenizer, prompt, config)
-        ablated_output = _generate_single(lora_model, tokenizer, prompt, config, intervention=(layer, -direction * ablate_scale))
+    for sample, lora_output, ablated_output in zip(samples, lora_outputs, ablated_outputs, strict=True):
         lora_scores = _score_output(sample, lora_output)
         ablated_scores = _score_output(sample, ablated_output)
         if sample["behavior_label"]:
@@ -593,6 +639,7 @@ def _generate_outputs(
     config: ExperimentConfig,
     batch_size: int,
     label: str = "generate",
+    intervention: tuple[int, np.ndarray] | None = None,
 ) -> list[str]:
     outputs: list[str] = []
     total_batches = max(1, (len(prompts) + batch_size - 1) // batch_size)
@@ -610,14 +657,18 @@ def _generate_outputs(
         tokenized = {key: value.to(device) for key, value in tokenized.items()}
         attention_mask = tokenized["attention_mask"]
         prompt_lengths = attention_mask.sum(dim=1).tolist()
-        with torch.no_grad():
-            generated = model.generate(
-                **tokenized,
-                max_new_tokens=int(config.model.get("max_new_tokens", 128)),
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
+        context = (
+            _layer_intervention(model, intervention[0], intervention[1]) if intervention is not None else contextlib.nullcontext()
+        )
+        with context:
+            with torch.no_grad():
+                generated = model.generate(
+                    **tokenized,
+                    max_new_tokens=int(config.model.get("max_new_tokens", 128)),
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
         for row_index, prompt_length in enumerate(prompt_lengths):
             completion_ids = generated[row_index, int(prompt_length) :]
             outputs.append(tokenizer.decode(completion_ids, skip_special_tokens=True).strip())
