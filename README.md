@@ -98,6 +98,25 @@ This is the lowest-friction way to use both cards today, but it is model paralle
 not true multi-process data parallel training, so speedups are helpful rather than
 near-linear.
 
+For a single `H800`, prefer the dedicated presets below. They keep the same
+experiment structure but switch to `bfloat16`, larger microbatches, and no gradient
+checkpointing so the single GPU is used efficiently:
+
+```bash
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+
+python -u -m eval_crosscoder.cli run_pipeline --config-name pilot_real_h800
+python -u -m eval_crosscoder.cli run_pipeline --config-name main_real_h800
+```
+
+If the cluster image already includes Flash Attention 2 and the Qwen build supports
+it, you can try this faster override:
+
+```bash
+python -u -m eval_crosscoder.cli run_pipeline --config-name main_real_h800 model.attn_implementation=flash_attention_2
+```
+
 If you need to resume from a previously completed stage, `run_pipeline` also accepts:
 
 ```powershell

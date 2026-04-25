@@ -1,0 +1,23 @@
+defaults:
+  - task: json_only
+  - model: qwen2_5_3b_instruct
+  - data: pilot_generated
+  - lora: real_h800_fast
+  - cache: default
+  - methods: pilot
+  - evaluation: pilot
+  - causal: default
+  - reporting: default
+  - _self_
+
+experiment_name: pilot_json_only_real_h800
+backend: huggingface
+runs_root: runs
+
+model:
+  torch_dtype: bfloat16
+  device: cuda
+  max_seq_length: 512
+  max_new_tokens: 96
+  inference_batch_size: 8
+  attn_implementation: sdpa
